@@ -20,7 +20,7 @@ from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 class JetbotCameraEnvCfg(DirectRLEnvCfg):
     # env
     decimation = 2
-    episode_length_s = 5.0
+    episode_length_s = 15.0
     # - spaces definition
     action_space = 2
     # observation_space = 9
@@ -41,10 +41,11 @@ class JetbotCameraEnvCfg(DirectRLEnvCfg):
         height=224,
     )
 
-    goal_cfg = RigidObjectCfg(prim_path="/World/envs/env_.*/marker", spawn=sim_utils.UsdFileCfg(usd_path=f"{ISAAC_NUCLEUS_DIR}/Props/Blocks/red_block.usd"), init_state=RigidObjectCfg.InitialStateCfg(pos=(2.1,.3,0)))
+    goal_cfg = RigidObjectCfg(prim_path="/World/envs/env_.*/marker", spawn=sim_utils.UsdFileCfg(usd_path=f"{ISAAC_NUCLEUS_DIR}/Props/Blocks/red_block.usd"), init_state=RigidObjectCfg.InitialStateCfg(pos=(2.1,-.3,0)))
 
-    observation_space = [5, tiled_camera.height, tiled_camera.width, 3]
+    #observation_space = [5, tiled_camera.height, tiled_camera.width, 3]
+    observation_space = [tiled_camera.height, tiled_camera.width, 3]
 
     # scene
-    scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=6, env_spacing=35.0, replicate_physics=True)
+    scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=10, env_spacing=20.0, replicate_physics=True)
     dof_names = ["left_wheel_joint", "right_wheel_joint"]

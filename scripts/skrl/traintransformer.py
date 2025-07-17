@@ -135,15 +135,11 @@ class Shared(GaussianMixin, DeterministicMixin, Model):
         DeterministicMixin.__init__(self, clip_actions)
 
         self.observation_space = observation_space
-
         self.device = device
-
-
-        self.camera_h, self.camera_w, self.channels = observation_space.shape
+        self.history_len, self.camera_h, self.camera_w, self.channels = self.observation_space.shape
         self.action_space = action_space.shape[0]
 
         self.features_extractor = nn.Sequential(
-
             nn.Conv2d(in_channels=self.channels,  
                       out_channels=32, kernel_size=8, stride=4, padding=0),
             nn.ReLU(),
@@ -152,11 +148,9 @@ class Shared(GaussianMixin, DeterministicMixin, Model):
             nn.Conv2d(64, 64, kernel_size=3, stride=1, padding=0),
             nn.ReLU(),
             nn.Flatten()
-
-
         )
 
-        self.features_extractor = self.features_extractor.to(device)
+        self.features_extractor = self.features_extractor.to(self.device)
 
         with torch.no_grad():
             # dummy state: batch=1, channels, height, width
@@ -177,8 +171,6 @@ class Shared(GaussianMixin, DeterministicMixin, Model):
 
         self.value_layer = nn.Linear(512, 1)
 
-        self.to(device)
-
     def act(self, inputs, role):
         if role == "policy":
             return GaussianMixin.act(self, inputs, role)
@@ -187,25 +179,26 @@ class Shared(GaussianMixin, DeterministicMixin, Model):
 
     def compute(self, inputs, role):
 
-        # inputs["states"] expected shape: (N, H, W, C)
-        states = unflatten_tensorized_space(self.observation_space, inputs["states"])
+        unflattened= unflatten_tensorized_space(self.observation_space, inputs["states"])
+        unflattened = unflattened.to(self.device)
 
-        x = states.to(self.device).permute(0, 3, 1, 2)       # → (N, C, H, W)
-        features = self.features_extractor(x)          # → (N, feat_dim)
-        shared   = self.fc1(features)                  # → (N, 512)      
+        print(unflattened.shape)
+
+        x = unflattened.to(self.device).permute(0, 3, 1, 2)       # → (N, C, H, W)
+        features = self.features_extractor(x)                     # → (N, feat_dim)
+        shared   = self.fc1(features)                             # → (N, 512)      
 
         if role == "policy":
-
             mean_action = self.mean_layer(shared)
             return mean_action, self.log_std_parameter, {}
         
         elif role == "value":
-
             value = self.value_layer(shared)
             return value, {}
 
 @hydra_task_config(args_cli.task, agent_cfg_entry_point)
 def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agent_cfg: dict):
+
     """Train with skrl agent."""
     # override configurations with non-hydra CLI arguments
     env_cfg.scene.num_envs = args_cli.num_envs if args_cli.num_envs is not None else env_cfg.scene.num_envs
@@ -246,7 +239,6 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # instantiate a memory as rollout buffer (any memory can be used for this)
     memory = RandomMemory(memory_size=24, num_envs=env.num_envs, device=device)
 
-
     # instantiate the agent's models (function approximators).
     # PPO requires 2 models, visit its documentation for more details
     # https://skrl.readthedocs.io/en/latest/api/agents/ppo.html#models
@@ -284,11 +276,6 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     cfg["experiment"]["write_interval"] = 60
     cfg["experiment"]["checkpoint_interval"] = 600
     cfg["experiment"]["directory"] = "runs/torch/Isaac-Velocity-Anymal-C-v0"
-
-
-    # print("ENVIRONMENT OBSERVATION SPACE BEFORE INSTANTIATING PPO")
-    # print(env.observation_space)
-    # print(env.action_space)
 
     agent = PPO(models=models,
                 memory=memory,

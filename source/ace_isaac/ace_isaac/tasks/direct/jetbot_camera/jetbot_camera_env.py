@@ -99,7 +99,7 @@ class JetbotCameraEnv(DirectRLEnv):
         self.forward_marker_orientations = torch.zeros((self.cfg.scene.num_envs, 4)).cuda()
         self.command_marker_orientations = torch.zeros((self.cfg.scene.num_envs, 4)).cuda()
 
-        self.radius_l = 1.0
+        self.radius_l = 0.5
         self.radius_h = 1.0
         self.dirs = torch.zeros((self.cfg.scene.num_envs, 3)).cuda()
 
@@ -144,56 +144,29 @@ class JetbotCameraEnv(DirectRLEnv):
         self.robot.set_joint_velocity_target(self.actions, joint_ids=self.dof_idx)
 
     def _get_observations(self) -> dict:
-        
+
         camera_data = self.robot_camera.data.output["rgb"] / 255.0
         # normalize the camera data for better training results
         mean_tensor = torch.mean(camera_data, dim=(1, 2), keepdim=True)
         camera_data -= mean_tensor
 
-        N, H, W, C = camera_data.shape
-
-        # 2) on first call, fill history with the current frame
-        if self._camera_hist is None:
-            # repeat the first frame history_len times
-
-            camera_data = camera_data.unsqueeze(1)
-            camera_data = camera_data.repeat(1, self.history_len, 1, 1, 1)
-            self._camera_hist = camera_data
-
-            #self._camera_hist = camera_data.unsqueeze(1).repeat(1, self.history_len, 1, 1, 1)
-        else:
-            # drop oldest frame and append newest
-            # _camera_hist[:, 1:] are t-3…t, so cat with new frame at dim=1
-            new = camera_data.unsqueeze(1)   # (N,1,H,W,C)
-            self._camera_hist = torch.cat([self._camera_hist[:, 1:], new], dim=1)
-
-        # 3) return a clone so downstream can’t accidentally overwrite it
-
-        # print("Camera History Shape")
-        # print(self._camera_hist.shape)
-
-
-        return {"policy": self._camera_hist.clone()}
+        return {"policy": camera_data.clone()}
 
 
     def _get_rewards(self) -> torch.Tensor:
-        forward_reward = self.robot.data.root_com_lin_vel_b[:,0].reshape(-1,1)
 
+        forward_reward = self.robot.data.root_com_lin_vel_b[:,0].reshape(-1,1)
         forwards = math_utils.quat_apply(self.robot.data.root_link_quat_w, self.robot.data.FORWARD_VEC_B)
         alignment_reward = torch.sum(forwards * self.commands, dim=-1, keepdim=True)
-        
-        # total_reward = forward_reward*alignment_reward
-        # total_reward = forward_reward*alignment_reward + forward_reward
-        # total_reward = forward_reward*torch.exp(alignment_reward)
-
+    
         # arrival bonus and distance penalty
         root_pos = self.robot.data.root_pos_w                # (N,3)
         goal_vec = self.goal_marker.data.root_pos_w - root_pos          # (N,3)
         dist = torch.linalg.norm(goal_vec, dim=-1, keepdim=True)  # (N,1)
         arrived = (dist < 0.1).to(torch.float32) * 2.0
-        dist_penalty = -0.1 * dist
+        #dist_penalty = -0.1 * dist
 
-        total_reward = forward_reward + alignment_reward + arrived + dist_penalty
+        total_reward = forward_reward*torch.exp(alignment_reward) + arrived 
 
         return total_reward
 
@@ -211,23 +184,22 @@ class JetbotCameraEnv(DirectRLEnv):
         default_root_state[:, :3] += self.scene.env_origins[env_ids]
         self.robot.write_root_state_to_sim(default_root_state, env_ids)
 
-        default_goal_state = self.goal_marker.data.default_root_state[env_ids]
-        default_goal_state[:, :3] += self.scene.env_origins[env_ids]
+        # default_goal_state = self.goal_marker.data.default_root_state[env_ids]
+        # default_goal_state[:, :3] += self.scene.env_origins[env_ids]
 
-        self.goal_marker.write_root_state_to_sim(default_goal_state, env_ids)
+        # self.goal_marker.write_root_state_to_sim(default_goal_state, env_ids)
 
+        N = self.cfg.scene.num_envs
+        self.dirs = torch.randn((N, 3)).cuda()
+        self.dirs[:,2] = 0.0
+        self.dirs = self.dirs/torch.linalg.norm(self.dirs, dim=1, keepdim=True)
 
-        # N = self.cfg.scene.num_envs
-        # self.dirs = torch.randn((N, 3)).cuda()
-        # self.dirs[:,2] = 0.0
-        # self.dirs = self.dirs/torch.linalg.norm(self.dirs, dim=1, keepdim=True)
+        goal_marker_pos = self.radius_l + (self.radius_h - self.radius_l) * torch.rand((N, 1)).cuda()
+        goal_marker_pos = goal_marker_pos*self.dirs + self.robot.data.root_pos_w
 
-        # goal_marker_pos = self.radius_l + (self.radius_h - self.radius_l) * torch.rand((N, 1)).cuda()
-        # goal_marker_pos = goal_marker_pos*self.dirs + self.robot.data.root_pos_w
-
-        # new_goal_state = self.goal_marker.data.default_root_state[env_ids].clone()
-        # new_goal_state[:, :3] = goal_marker_pos
-        # self.goal_marker.write_root_state_to_sim(new_goal_state, env_ids)
+        new_goal_state = self.goal_marker.data.default_root_state[env_ids].clone()
+        new_goal_state[:, :3] = goal_marker_pos
+        self.goal_marker.write_root_state_to_sim(new_goal_state, env_ids)
 
         root_pos = self.robot.data.root_pos_w                # (N,3)
         goal_vec = self.goal_marker.data.root_pos_w - root_pos          # (N,3)
