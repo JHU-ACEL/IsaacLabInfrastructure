@@ -10,9 +10,9 @@ import torch
 from collections.abc import Sequence
 
 import isaaclab.sim as sim_utils
-from isaaclab.assets import Articulation, RigidObject
+from isaaclab.assets import Articulation, RigidObject, RigidObjectCfg, AssetBaseCfg, AssetBase
 from isaaclab.envs import DirectRLEnv
-from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
+from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane, spawn_from_usd
 from isaaclab.sensors import TiledCamera
 
 from isaaclab.markers import VisualizationMarkers, VisualizationMarkersCfg
@@ -48,17 +48,30 @@ class JetbotCameraEnv(DirectRLEnv):
         super().__init__(cfg, render_mode, **kwargs)
         self.dof_idx, _ = self.robot.find_joints(self.cfg.dof_names)
 
+    def close(self):
+        """Cleanup for the environment."""
+        super().close()
+
     def _setup_scene(self):
+
         self.robot = Articulation(self.cfg.robot_cfg)
         self.goal_marker = RigidObject(self.cfg.goal_cfg)
         self.robot_camera = TiledCamera(self.cfg.tiled_camera)
 
         # add ground plane
         spawn_ground_plane(prim_path="/World/ground", cfg=GroundPlaneCfg())
+
+        # Spawn Room instead
+        #spawn_from_usd(prim_path = "/World/room", cfg = sim_utils.UsdFileCfg(usd_path=f"{ISAAC_NUCLEUS_DIR}/Environments/Simple_Warehouse/warehouse_multiple_shelves.usd"))
+        
         # clone and replicate
         self.scene.clone_environments(copy_from_source=False)
+
         # add articulation to scene
         self.scene.articulations["robot"] = self.robot
+        self.scene.rigid_objects["goal_marker"] = self.goal_marker
+        self.scene.sensors["tiled_camera"] = self.robot_camera
+
         # add lights
         light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
         light_cfg.func("/World/Light", light_cfg)
@@ -86,20 +99,22 @@ class JetbotCameraEnv(DirectRLEnv):
         self.forward_marker_orientations = torch.zeros((self.cfg.scene.num_envs, 4)).cuda()
         self.command_marker_orientations = torch.zeros((self.cfg.scene.num_envs, 4)).cuda()
 
-        self.radius_l = 0.5
+        self.radius_l = 1.0
         self.radius_h = 1.0
         self.dirs = torch.zeros((self.cfg.scene.num_envs, 3)).cuda()
+
+        self.history_len = 5
+        self._camera_hist: torch.Tensor | None = None
         
 
     def _visualize_markers(self):
 
-        root_pos = self.robot.data.root_pos_w                # (N,3)
-        goal_vec = self.goal_marker.data.root_pos_w - root_pos          # (N,3)
-
-        #print(f"Position of the Red Block: {self.goal_marker.data.root_pos_w }")
-
+        root_pos = self.robot.data.root_pos_w # (N,3)
+        goal_vec = self.goal_marker.data.root_pos_w - root_pos # (N,3)
         goal_vec = goal_vec/torch.linalg.norm(goal_vec, dim=-1, keepdim=True)
         self.commands = goal_vec
+
+        # offsets to account for atan range and keep things on [-pi, pi]
         ratio = self.commands[:,1]/(self.commands[:,0]+1E-8)
         gzero = torch.where(self.commands > 0, True, False)
         lzero = torch.where(self.commands < 0, True, False)
@@ -122,20 +137,44 @@ class JetbotCameraEnv(DirectRLEnv):
         self.visualization_markers.visualize(loc, rots, marker_indices=indices)
 
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
-        self.actions = 10*actions.clone()# + torch.ones_like(actions)
+        self.actions = 5*actions.clone()# + torch.ones_like(actions)
         self._visualize_markers()
 
     def _apply_action(self) -> None:
         self.robot.set_joint_velocity_target(self.actions, joint_ids=self.dof_idx)
 
     def _get_observations(self) -> dict:
-
+        
         camera_data = self.robot_camera.data.output["rgb"] / 255.0
         # normalize the camera data for better training results
         mean_tensor = torch.mean(camera_data, dim=(1, 2), keepdim=True)
         camera_data -= mean_tensor
 
-        return {"policy": camera_data.clone()}
+        N, H, W, C = camera_data.shape
+
+        # 2) on first call, fill history with the current frame
+        if self._camera_hist is None:
+            # repeat the first frame history_len times
+
+            camera_data = camera_data.unsqueeze(1)
+            camera_data = camera_data.repeat(1, self.history_len, 1, 1, 1)
+            self._camera_hist = camera_data
+
+            #self._camera_hist = camera_data.unsqueeze(1).repeat(1, self.history_len, 1, 1, 1)
+        else:
+            # drop oldest frame and append newest
+            # _camera_hist[:, 1:] are t-3…t, so cat with new frame at dim=1
+            new = camera_data.unsqueeze(1)   # (N,1,H,W,C)
+            self._camera_hist = torch.cat([self._camera_hist[:, 1:], new], dim=1)
+
+        # 3) return a clone so downstream can’t accidentally overwrite it
+
+        # print("Camera History Shape")
+        # print(self._camera_hist.shape)
+
+
+        return {"policy": self._camera_hist.clone()}
+
 
     def _get_rewards(self) -> torch.Tensor:
         forward_reward = self.robot.data.root_com_lin_vel_b[:,0].reshape(-1,1)
@@ -170,26 +209,25 @@ class JetbotCameraEnv(DirectRLEnv):
 
         default_root_state = self.robot.data.default_root_state[env_ids]
         default_root_state[:, :3] += self.scene.env_origins[env_ids]
-
         self.robot.write_root_state_to_sim(default_root_state, env_ids)
 
-        # default_block_root_state = self.goal_marker.data.default_root_state[env_ids]
-        # default_block_root_state[:, :3] += self.scene.env_origins[env_ids]
+        default_goal_state = self.goal_marker.data.default_root_state[env_ids]
+        default_goal_state[:, :3] += self.scene.env_origins[env_ids]
 
-        # self.goal_marker.write_root_state_to_sim(default_block_root_state, env_ids)
+        self.goal_marker.write_root_state_to_sim(default_goal_state, env_ids)
 
-        N = self.cfg.scene.num_envs
-        self.dirs = torch.randn((N, 3)).cuda()
-        self.dirs[:,2] = 0.0
-        self.dirs = self.dirs/torch.linalg.norm(self.dirs, dim=1, keepdim=True)
 
-        goal_marker_pos = self.radius_l + (self.radius_h - self.radius_l) * torch.rand((N, 1)).cuda()
-        goal_marker_pos = goal_marker_pos*self.dirs + self.robot.data.root_pos_w
-        ### USE THIS TO SET THE POSITION OF THE GOAL MARKER###
+        # N = self.cfg.scene.num_envs
+        # self.dirs = torch.randn((N, 3)).cuda()
+        # self.dirs[:,2] = 0.0
+        # self.dirs = self.dirs/torch.linalg.norm(self.dirs, dim=1, keepdim=True)
 
-        new_goal_state = self.goal_marker.data.default_root_state[env_ids].clone()
-        new_goal_state[:, :3] = goal_marker_pos
-        self.goal_marker.write_root_state_to_sim(new_goal_state, env_ids)
+        # goal_marker_pos = self.radius_l + (self.radius_h - self.radius_l) * torch.rand((N, 1)).cuda()
+        # goal_marker_pos = goal_marker_pos*self.dirs + self.robot.data.root_pos_w
+
+        # new_goal_state = self.goal_marker.data.default_root_state[env_ids].clone()
+        # new_goal_state[:, :3] = goal_marker_pos
+        # self.goal_marker.write_root_state_to_sim(new_goal_state, env_ids)
 
         root_pos = self.robot.data.root_pos_w                # (N,3)
         goal_vec = self.goal_marker.data.root_pos_w - root_pos          # (N,3)
