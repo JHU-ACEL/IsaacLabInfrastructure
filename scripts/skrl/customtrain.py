@@ -107,6 +107,8 @@ algorithm = args_cli.algorithm.lower()
 agent_cfg_entry_point = "skrl_cfg_entry_point" if algorithm in ["ppo"] else f"skrl_{algorithm}_cfg_entry_point"
 
 
+
+''' Custom NN Architecture (Pytorch Style)'''
 import torch
 import torch.nn as nn
 
@@ -120,9 +122,7 @@ from skrl.resources.preprocessors.torch import RunningStandardScaler
 from skrl.resources.schedulers.torch import KLAdaptiveRL
 from skrl.trainers.torch import SequentialTrainer
 from skrl.utils import set_seed
-
-# seed for reproducibility
-set_seed()  # e.g. `set_seed(42)` for fixed seed
+from skrl.utils.spaces.torch import unflatten_tensorized_space
 
 
 # define shared model (stochastic and deterministic models) using mixins
@@ -133,17 +133,40 @@ class Shared(GaussianMixin, DeterministicMixin, Model):
         GaussianMixin.__init__(self, clip_actions, clip_log_std, min_log_std, max_log_std, reduction)
         DeterministicMixin.__init__(self, clip_actions)
 
-        self.net = nn.Sequential(nn.Linear(self.num_observations, 128),
-                                 nn.ELU(),
-                                 nn.Linear(128, 128),
-                                 nn.ELU(),
-                                 nn.Linear(128, 128),
+        self.observation_space = observation_space
+        self.device = device
+        self.camera_h, self.camera_w, self.channels = observation_space.shape
+        self.action_space = action_space.shape[0]
+
+        self.features_extractor = nn.Sequential(
+            nn.Conv2d(in_channels=self.channels,  
+                      out_channels=32, kernel_size=8, stride=4, padding=0),
+            nn.ReLU(),
+            nn.Conv2d(32, 64, kernel_size=4, stride=2, padding=0),
+            nn.ReLU(),
+            nn.Conv2d(64, 64, kernel_size=3, stride=1, padding=0),
+            nn.ReLU(),
+            nn.Flatten()
+        )
+
+        self.features_extractor = self.features_extractor.to(device)
+
+        with torch.no_grad():
+            # dummy state: batch=1, channels, height, width
+            dummy = torch.zeros(1,
+                                self.channels,
+                                self.camera_h,
+                                self.camera_w,
+                                device=device)
+            feat_dim = self.features_extractor(dummy).shape[1]
+            
+        self.fc1 = nn.Sequential(nn.Linear(feat_dim, 512),
                                  nn.ELU())
 
-        self.mean_layer = nn.Linear(128, self.num_actions)
-        self.log_std_parameter = nn.Parameter(torch.zeros(self.num_actions))
+        self.mean_layer = nn.Linear(512, self.action_space)
+        self.log_std_parameter = nn.Parameter(torch.zeros(self.action_space))
 
-        self.value_layer = nn.Linear(128, 1)
+        self.value_layer = nn.Linear(512, 1)
 
     def act(self, inputs, role):
         if role == "policy":
@@ -152,13 +175,23 @@ class Shared(GaussianMixin, DeterministicMixin, Model):
             return DeterministicMixin.act(self, inputs, role)
 
     def compute(self, inputs, role):
+
+        # inputs["states"] expected shape: (N, H, W, C)
+        obs = unflatten_tensorized_space(self.observation_space, inputs["states"])
+
+        x = obs.to(self.device).permute(0, 3, 1, 2)       # → (N, C, H, W)
+        features = self.features_extractor(x)          # → (N, feat_dim)
+        shared = self.fc1(features)                  # → (N, 512)      
+
         if role == "policy":
-            self._shared_output = self.net(inputs["states"])
-            return self.mean_layer(self._shared_output), self.log_std_parameter, {}
+            mean_action = self.mean_layer(shared)
+            return mean_action, self.log_std_parameter, {}
         elif role == "value":
-            shared_output = self.net(inputs["states"]) if self._shared_output is None else self._shared_output
-            self._shared_output = None
-            return self.value_layer(shared_output), {}
+            value = self.value_layer(shared)
+            return value, {}
+
+''' Custom NN Ends'''
+
 
 @hydra_task_config(args_cli.task, agent_cfg_entry_point)
 def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agent_cfg: dict):
@@ -234,7 +267,21 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # wrap around environment for skrl
     env = SkrlVecEnvWrapper(env, ml_framework=args_cli.ml_framework)  # same as: `wrap_env(env, wrapper="auto")`
 
+    # # configure and instantiate the skrl runner
+    # # https://skrl.readthedocs.io/en/latest/api/utils/runner.html
+    # runner = Runner(env, agent_cfg)
+
+    # # load checkpoint (if specified)
+    # if resume_path:
+    #     print(f"[INFO] Loading model checkpoint from: {resume_path}")
+    #     runner.agent.load(resume_path)
+
+    # # run training
+    # runner.run()
+
+
     device = env.device
+
 
     # instantiate a memory as rollout buffer (any memory can be used for this)
     memory = RandomMemory(memory_size=24, num_envs=env.num_envs, device=device)
@@ -247,17 +294,18 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     models["policy"] = Shared(env.observation_space, env.action_space, device)
     models["value"] = models["policy"]  # same instance: shared model
 
+
     # configure and instantiate the agent (visit its documentation to see all the options)
     # https://skrl.readthedocs.io/en/latest/api/agents/ppo.html#configuration-and-hyperparameters
     cfg = PPO_DEFAULT_CONFIG.copy()
-    cfg["rollouts"] = 24  # memory_size
-    cfg["learning_epochs"] = 5
+    cfg["rollouts"] = 64  # memory_size
+    cfg["learning_epochs"] = 4
     cfg["mini_batches"] = 4  # 24 * 4096 / 24576
     cfg["discount_factor"] = 0.99
     cfg["lambda"] = 0.95
-    cfg["learning_rate"] = 1e-3
+    cfg["learning_rate"] = 1.0e-04
     cfg["learning_rate_scheduler"] = KLAdaptiveRL
-    cfg["learning_rate_scheduler_kwargs"] = {"kl_threshold": 0.01}
+    cfg["learning_rate_scheduler_kwargs"] = {"kl_threshold": 0.008}
     cfg["random_timesteps"] = 0
     cfg["learning_starts"] = 0
     cfg["grad_norm_clip"] = 1.0
@@ -269,8 +317,8 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     cfg["kl_threshold"] = 0
     cfg["rewards_shaper"] = None
     cfg["time_limit_bootstrap"] = False
-    cfg["state_preprocessor"] = RunningStandardScaler
-    cfg["state_preprocessor_kwargs"] = {"size": env.observation_space, "device": device}
+    # cfg["state_preprocessor"] = RunningStandardScaler
+    # cfg["state_preprocessor_kwargs"] = {"size": env.observation_space, "device": device}
     cfg["value_preprocessor"] = RunningStandardScaler
     cfg["value_preprocessor_kwargs"] = {"size": 1, "device": device}
     # logging to TensorBoard and write checkpoints (in timesteps)
@@ -285,20 +333,9 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                 action_space=env.action_space,
                 device=device)
 
-    # # configure and instantiate the skrl runner
-    # # https://skrl.readthedocs.io/en/latest/api/utils/runner.html
-    # runner = Runner(env, agent_cfg)
-
-    # # load checkpoint (if specified)
-    # if resume_path:
-    #     print(f"[INFO] Loading model checkpoint from: {resume_path}")
-    #     runner.agent.load(resume_path)
-
-    # # run training
-    # runner.run()
 
     # configure and instantiate the RL trainer
-    cfg_trainer = {"timesteps": 12000, "headless": True}
+    cfg_trainer = {"timesteps": 32000, "headless": True}
     trainer = SequentialTrainer(cfg=cfg_trainer, env=env, agents=agent)
 
     # start training

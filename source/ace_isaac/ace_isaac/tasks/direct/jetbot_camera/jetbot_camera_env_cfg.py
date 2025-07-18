@@ -20,7 +20,7 @@ from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 class JetbotCameraEnvCfg(DirectRLEnvCfg):
     # env
     decimation = 2
-    episode_length_s = 15.0
+    episode_length_s = 10.0
     # - spaces definition
     action_space = 2
     # observation_space = 9
@@ -47,5 +47,5 @@ class JetbotCameraEnvCfg(DirectRLEnvCfg):
     observation_space = [tiled_camera.height, tiled_camera.width, 3]
 
     # scene
-    scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=10, env_spacing=20.0, replicate_physics=True)
+    scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=8, env_spacing=20.0, replicate_physics=True)
     dof_names = ["left_wheel_joint", "right_wheel_joint"]
