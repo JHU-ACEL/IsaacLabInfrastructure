@@ -150,6 +150,9 @@ class JetbotCameraEnv(DirectRLEnv):
         mean_tensor = torch.mean(camera_data, dim=(1, 2), keepdim=True)
         camera_data -= mean_tensor
 
+
+        #print(camera_data.shape)
+
         return {"policy": camera_data.clone()}
 
 
