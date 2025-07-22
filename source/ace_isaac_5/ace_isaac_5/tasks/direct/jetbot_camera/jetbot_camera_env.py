@@ -61,8 +61,8 @@ class JetbotCameraEnv(DirectRLEnv):
         # add ground plane
         spawn_ground_plane(prim_path="/World/ground", cfg=GroundPlaneCfg(size=(10000.0, 10000.0)))
 
-        # Spawn Room instead
-        #spawn_from_usd(prim_path = "/World/room", cfg = sim_utils.UsdFileCfg(usd_path=f"{ISAAC_NUCLEUS_DIR}/Environments/Simple_Warehouse/warehouse_multiple_shelves.usd"))
+        #Spawn Room instead
+        #spawn_from_usd(prim_path = "/World/room", cfg = sim_utils.UsdFileCfg(usd_path=f"{ISAAC_NUCLEUS_DIR}/Environments/Simple_Room/simple_room.usd"))
         
         # clone and replicate
         self.scene.clone_environments(copy_from_source=False)
@@ -137,23 +137,54 @@ class JetbotCameraEnv(DirectRLEnv):
         self.visualization_markers.visualize(loc, rots, marker_indices=indices)
 
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
-        self.actions = 5*actions.clone()# + torch.ones_like(actions)
+        self.actions = 10*actions.clone()# + torch.ones_like(actions)
         self._visualize_markers()
 
     def _apply_action(self) -> None:
         self.robot.set_joint_velocity_target(self.actions, joint_ids=self.dof_idx)
 
-    def _get_observations(self) -> dict:
+    # def _get_observations(self) -> dict:
 
+    #     camera_data = self.robot_camera.data.output["rgb"] / 255.0
+    #     # normalize the camera data for better training results
+    #     mean_tensor = torch.mean(camera_data, dim=(1, 2), keepdim=True)
+    #     camera_data -= mean_tensor
+
+
+    #     #print(camera_data.shape)
+
+    #     return {"policy": camera_data.clone()}
+
+
+    def _get_observations(self) -> dict:
+        
         camera_data = self.robot_camera.data.output["rgb"] / 255.0
         # normalize the camera data for better training results
         mean_tensor = torch.mean(camera_data, dim=(1, 2), keepdim=True)
         camera_data -= mean_tensor
 
+        # 2) on first call, fill history with the current frame
+        if self._camera_hist is None:
+            # repeat the first frame history_len times
 
-        #print(camera_data.shape)
+            camera_data = camera_data.unsqueeze(1)
+            camera_data = camera_data.repeat(1, self.history_len, 1, 1, 1)
+            self._camera_hist = camera_data
 
-        return {"policy": camera_data.clone()}
+            #self._camera_hist = camera_data.unsqueeze(1).repeat(1, self.history_len, 1, 1, 1)
+        else:
+            # drop oldest frame and append newest
+            # _camera_hist[:, 1:] are t-3…t, so cat with new frame at dim=1
+            new = camera_data.unsqueeze(1)   # (N,1,H,W,C)
+            self._camera_hist = torch.cat([self._camera_hist[:, 1:], new], dim=1)
+
+        # 3) return a clone so downstream can’t accidentally overwrite it
+
+        # print("Camera History Shape")
+        # print(self._camera_hist.shape)
+
+
+        return {"policy": self._camera_hist.clone()}
 
 
     def _get_rewards(self) -> torch.Tensor:

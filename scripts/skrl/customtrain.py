@@ -135,7 +135,7 @@ class Shared(GaussianMixin, DeterministicMixin, Model):
 
         self.observation_space = observation_space
         self.device = device
-        self.camera_h, self.camera_w, self.channels = observation_space.shape
+        self.steps, self.camera_h, self.camera_w, self.channels = observation_space.shape
         self.action_space = action_space.shape[0]
 
         self.features_extractor = nn.Sequential(
@@ -159,8 +159,10 @@ class Shared(GaussianMixin, DeterministicMixin, Model):
                                 self.camera_w,
                                 device=device)
             feat_dim = self.features_extractor(dummy).shape[1]
+
+        print(f"FEATURE DIMENSION: {feat_dim}")
             
-        self.fc1 = nn.Sequential(nn.Linear(feat_dim, 512),
+        self.fc1 = nn.Sequential(nn.Linear(self.steps*feat_dim, 512),
                                  nn.ELU())
 
         self.mean_layer = nn.Linear(512, self.action_space)
@@ -179,14 +181,27 @@ class Shared(GaussianMixin, DeterministicMixin, Model):
 
         # inputs["states"] expected shape: (N, H, W, C)
         obs = unflatten_tensorized_space(self.observation_space, inputs["states"])
+        per_frame_obs = list(torch.unbind(obs, dim=1))
 
-        x = obs.to(self.device).permute(0, 3, 1, 2)         # → (N, C, H, W)
-        features = self.features_extractor(x)               # → (N, feat_dim)
-        shared = self.fc1(features)                         # → (N, 512)      
+        # per_frame_obs: list of 5 tensors, each shape (N, T, H, W, C)
+        frame_feats = []
+        for frame in per_frame_obs:
+            # move to device & convert NHWC → NCHW
+            x = frame.to(self.device).permute(0, 3, 1, 2)      # → (N, C, H, W)
+            # run through your 2D‐CNN extractor
+            feat = self.features_extractor(x)                 # → (N, feat_dim)
+            frame_feats.append(feat)
+
+        # frame_feats: list of 5 tensors of shape (N, feat_dim)
+        flat_feats = torch.cat(frame_feats, dim=1)   # → (N, 5 * feat_dim)
+        # print(f"FLAT FEATS SHAPE: {flat_feats.shape}")
+
+        shared = self.fc1(flat_feats)           # → (N, 512)
 
         if role == "policy":
             mean_action = self.mean_layer(shared)
             return mean_action, self.log_std_parameter, {}
+
         elif role == "value":
             value = self.value_layer(shared)
             return value, {}
@@ -221,27 +236,27 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     agent_cfg["seed"] = args_cli.seed if args_cli.seed is not None else agent_cfg["seed"]
     env_cfg.seed = agent_cfg["seed"]
 
-    # specify directory for logging experiments
-    log_root_path = os.path.join("logs", "skrl", agent_cfg["agent"]["experiment"]["directory"])
-    log_root_path = os.path.abspath(log_root_path)
-    print(f"[INFO] Logging experiment in directory: {log_root_path}")
-    # specify directory for logging runs: {time-stamp}_{run_name}
-    log_dir = datetime.now().strftime("%Y-%m-%d_%H-%M-%S") + f"_{algorithm}_{args_cli.ml_framework}"
-    # The Ray Tune workflow extracts experiment name using the logging line below, hence, do not change it (see PR #2346, comment-2819298849)
-    print(f"Exact experiment name requested from command line: {log_dir}")
-    if agent_cfg["agent"]["experiment"]["experiment_name"]:
-        log_dir += f'_{agent_cfg["agent"]["experiment"]["experiment_name"]}'
-    # set directory into agent config
-    agent_cfg["agent"]["experiment"]["directory"] = log_root_path
-    agent_cfg["agent"]["experiment"]["experiment_name"] = log_dir
-    # update log_dir
-    log_dir = os.path.join(log_root_path, log_dir)
+    # # specify directory for logging experiments
+    # log_root_path = os.path.join("logs", "skrl", agent_cfg["agent"]["experiment"]["directory"])
+    # log_root_path = os.path.abspath(log_root_path)
+    # print(f"[INFO] Logging experiment in directory: {log_root_path}")
+    # # specify directory for logging runs: {time-stamp}_{run_name}
+    # log_dir = datetime.now().strftime("%Y-%m-%d_%H-%M-%S") + f"_{algorithm}_{args_cli.ml_framework}"
+    # # The Ray Tune workflow extracts experiment name using the logging line below, hence, do not change it (see PR #2346, comment-2819298849)
+    # print(f"Exact experiment name requested from command line: {log_dir}")
+    # if agent_cfg["agent"]["experiment"]["experiment_name"]:
+    #     log_dir += f'_{agent_cfg["agent"]["experiment"]["experiment_name"]}'
+    # # set directory into agent config
+    # agent_cfg["agent"]["experiment"]["directory"] = log_root_path
+    # agent_cfg["agent"]["experiment"]["experiment_name"] = log_dir
+    # # update log_dir
+    # log_dir = os.path.join(log_root_path, log_dir)
 
-    # dump the configuration into log-directory
-    dump_yaml(os.path.join(log_dir, "params", "env.yaml"), env_cfg)
-    dump_yaml(os.path.join(log_dir, "params", "agent.yaml"), agent_cfg)
-    dump_pickle(os.path.join(log_dir, "params", "env.pkl"), env_cfg)
-    dump_pickle(os.path.join(log_dir, "params", "agent.pkl"), agent_cfg)
+    # # dump the configuration into log-directory
+    # dump_yaml(os.path.join(log_dir, "params", "env.yaml"), env_cfg)
+    # dump_yaml(os.path.join(log_dir, "params", "agent.yaml"), agent_cfg)
+    # dump_pickle(os.path.join(log_dir, "params", "env.pkl"), env_cfg)
+    # dump_pickle(os.path.join(log_dir, "params", "agent.pkl"), agent_cfg)
 
     # get checkpoint path (to resume training)
     resume_path = retrieve_file_path(args_cli.checkpoint) if args_cli.checkpoint else None

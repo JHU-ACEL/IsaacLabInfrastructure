@@ -20,7 +20,7 @@ from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 class JetbotCameraEnvCfg(DirectRLEnvCfg):
     # env
     decimation = 2
-    episode_length_s = 10.0
+    episode_length_s = 7.0
     # - spaces definition
     action_space = 2
     # observation_space = 9
@@ -29,7 +29,7 @@ class JetbotCameraEnvCfg(DirectRLEnvCfg):
     # simulation
     sim: SimulationCfg = SimulationCfg(dt=1 / 120, render_interval=decimation)
     # robot(s)
-    robot_cfg: ArticulationCfg = JETBOT_CONFIG.replace(prim_path="/World/envs/env_.*/Robot", init_state=ArticulationCfg.InitialStateCfg(pos=(1.5,0,0)))
+    robot_cfg: ArticulationCfg = JETBOT_CONFIG.replace(prim_path="/World/envs/env_.*/Robot")
 
     # camera
     tiled_camera: TiledCameraCfg = TiledCameraCfg(
@@ -43,8 +43,8 @@ class JetbotCameraEnvCfg(DirectRLEnvCfg):
 
     goal_cfg = RigidObjectCfg(prim_path="/World/envs/env_.*/marker", spawn=sim_utils.UsdFileCfg(usd_path=f"{ISAAC_NUCLEUS_DIR}/Props/Blocks/red_block.usd", scale = (3.0, 3.0, 3.0)), init_state=RigidObjectCfg.InitialStateCfg(pos=(2.1,-.3,0)))
 
-    #observation_space = [5, tiled_camera.height, tiled_camera.width, 3]
-    observation_space = [tiled_camera.height, tiled_camera.width, 3]
+    observation_space = [5, tiled_camera.height, tiled_camera.width, 3]
+    #observation_space = [tiled_camera.height, tiled_camera.width, 3]
 
     # scene
     scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=100, env_spacing=20.0, replicate_physics=True)
