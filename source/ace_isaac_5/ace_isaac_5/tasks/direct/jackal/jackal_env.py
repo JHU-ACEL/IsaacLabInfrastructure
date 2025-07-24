@@ -55,7 +55,8 @@ class JackalEnv(DirectRLEnv):
 
     def _setup_scene(self):
 
-        #self.scene.sensors.clear()
+        self.valid_spawn_locs = self.scene.terrain.get_spawn_locations()
+        #Replace self.cfg.robot_cfg's init state here
         self.robot = Articulation(self.cfg.robot_cfg)
         # add ground plane
         #spawn_ground_plane(prim_path="/World/ground", cfg=GroundPlaneCfg())
@@ -63,6 +64,7 @@ class JackalEnv(DirectRLEnv):
         self.scene.clone_environments(copy_from_source=False)
         # add articulation to scene
         self.scene.articulations["robot"] = self.robot
+
         # add lights
         light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
         light_cfg.func("/World/Light", light_cfg)
@@ -95,7 +97,10 @@ class JackalEnv(DirectRLEnv):
             env_ids = self.robot._ALL_INDICES
         super()._reset_idx(env_ids)
 
-        default_root_state = self.robot.data.default_root_state[env_ids]
-        default_root_state[:, :3] += self.scene.env_origins[env_ids]
+        default_root_state = self.robot.data.default_root_state[env_ids].clone()
+        default_root_state[:, :3] = self.valid_spawn_locs[env_ids]
+        default_root_state[:, 2] += 0.075
+
+        #default_root_state[:, :3] += self.scene.env_origins[0]
 
         self.robot.write_root_state_to_sim(default_root_state, env_ids)

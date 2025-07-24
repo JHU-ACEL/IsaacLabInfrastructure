@@ -13,7 +13,7 @@ JACKAL_CONFIG = ArticulationCfg(
     #spawn=sim_utils.UsdFileCfg(usd_path=f"{ISAAC_NUCLEUS_DIR}/Robots/Clearpath/Jackal/jackal.usd"),
     spawn=sim_utils.UsdFileCfg(usd_path="/home/bchien1/ACE_IsaacLabInfrastructure/source/ace_isaac_5/ace_isaac_5/robots/jackal.usd"),
     init_state=ArticulationCfg.InitialStateCfg(
-        pos=(57.5, 50.0, -5.0),
+        pos=(0.0, 0.0, 0.0),
         joint_pos={       
             "front_left_wheel_joint": 0.0,
             "front_right_wheel_joint": 0.0,

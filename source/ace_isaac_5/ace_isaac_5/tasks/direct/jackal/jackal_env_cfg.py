@@ -16,6 +16,7 @@ import isaaclab.sim as sim_utils
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 
 from isaaclab.terrains import TerrainImporterCfg
+from .terrain_utils.terrain_importer import RoverTerrainImporter
 
 
 
@@ -27,40 +28,39 @@ class MarsTerrainSceneCfg(InteractiveSceneCfg):
     """
     # Hidden Terrain (merged terrain of ground and obstacles) for raycaster.
     # This is done because the raycaster doesn't work with multiple meshes
-    # hidden_terrain = AssetBaseCfg(
-    #     prim_path="/World/terrain/hidden_terrain",
-    #     spawn=sim_utils.UsdFileCfg(
-    #         visible=False,
-    #         usd_path="/home/bchien1/ACE_IsaacLabInfrastructure/source/ace_isaac_5/ace_isaac_5/mars_terrain/terrain_merged.usd",
-    #     ),
-    #     init_state=AssetBaseCfg.InitialStateCfg(pos=(0.0, 0.0, 0.0)),
-    # )
-
-
+    hidden_terrain = AssetBaseCfg(
+        prim_path="/World/terrain/hidden_terrain",
+        spawn=sim_utils.UsdFileCfg(
+            visible=False,
+            usd_path="source/ace_isaac_5/ace_isaac_5/mars_terrain/terrain_merged.usd"
+        ),
+        init_state=AssetBaseCfg.InitialStateCfg(pos=(0.0, 0.0, 0.0)),
+    )
 
     # Obstacles
-    # obstacles = AssetBaseCfg(
-    #     prim_path="/World/terrain/obstacles",
-    #     spawn=sim_utils.UsdFileCfg(
-    #         visible=True,
-    #         usd_path="/home/bchien1/ACE_IsaacLabInfrastructure/source/ace_isaac_5/ace_isaac_5/mars_terrain/rocks_merged.usd",
-    #     ),
-    #     init_state=AssetBaseCfg.InitialStateCfg(pos=(0.0, 0.0, 0.0)),
-    # )
+    obstacles = AssetBaseCfg(
+        prim_path="/World/terrain/obstacles",
+        spawn=sim_utils.UsdFileCfg(
+            visible=True,
+            usd_path="/home/bchien1/ACE_IsaacLabInfrastructure/source/ace_isaac_5/ace_isaac_5/mars_terrain/rocks_merged.usd"
+        ),
+        init_state=AssetBaseCfg.InitialStateCfg(pos=(0.0, 0.0, 0.0)),
+    )
 
         # Ground Terrain
     terrain = TerrainImporterCfg(
+        class_type=RoverTerrainImporter,
         prim_path="/World/terrain",
         terrain_type="usd",
-        usd_path="/home/bchien1/ACE_IsaacLabInfrastructure/source/ace_isaac_5/ace_isaac_5/mars_terrain/terrain_only.usd",
+        collision_group=-1,
+        usd_path="/home/bchien1/ACE_IsaacLabInfrastructure/source/ace_isaac_5/ace_isaac_5/mars_terrain/terrain_only.usd"
     )
-
 
 @configclass
 class JackalEnvCfg(DirectRLEnvCfg):
     # env
     decimation = 2
-    episode_length_s = 7.0
+    episode_length_s = 4.0
     # - spaces definition
     action_space = 4
     # observation_space = 9
@@ -90,6 +90,6 @@ class JackalEnvCfg(DirectRLEnvCfg):
     observation_space = 3
 
     # scene
-    scene: MarsTerrainSceneCfg = MarsTerrainSceneCfg(num_envs=1, env_spacing=20.0, replicate_physics=True)
+    scene: MarsTerrainSceneCfg = MarsTerrainSceneCfg(num_envs=100, env_spacing=5.0, replicate_physics=True)
     #scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=1, env_spacing=5.0, replicate_physics=True)
     dof_names = ['front_left_wheel_joint', 'front_right_wheel_joint', 'rear_left_wheel_joint', 'rear_right_wheel_joint']
